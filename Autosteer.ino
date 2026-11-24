@@ -231,7 +231,7 @@ void autosteerSetup()
 		if (!steerConfig.IsDanfoss) {
 			Autosteer_running = false;  // bloquant seulement en mode WAS physique
 		} else {
-			Serial.println("ADC non utilise en mode encodeur Keya (IsDanfoss=1).");
+			Serial.println("ADC non utilise en mode HWT101CT (IsDanfoss=1).");
 		}
 	}
 
@@ -434,18 +434,24 @@ void autosteerLoop()
     // =================================================================
     if (steerConfig.IsDanfoss)
     {
-      // --- MODE ENCODEUR KEYA ---
-      int32_t deltaTicks = keyaEncoderRaw - keyaZeroTicks;
-      float rawAngle = (float)deltaTicks / keyaTicksPerDeg;
+      // --- MODE HWT101CT + TM171 VIRTUAL WAS ---
+      // HWT jest na zwrotnicy. Odejmujemy yaw calego ciagnika z TM171.
+      // emaGpsHdg jest zapisany jako deg x10.
+      HWTwasUpdate(YawV.fValue, gpsSpeed, emaGpsHdg * 0.1f);
+
+      float rawAngle = HWTwasGetAngle();
 
       if (steerConfig.InvertWAS) rawAngle = -rawAngle;
 
       steerAngleActual   = rawAngle;
       helloSteerPosition = (int16_t)(rawAngle * 100.0f);
-      steeringPosition   = (int16_t)deltaTicks;
+      steeringPosition   = helloSteerPosition;
 
-      // Bloquer l'autoguidage tant que le zero n'est pas etabli
-      if (!wasZeroDone) watchdogTimer = WATCHDOG_FORCE_VALUE;
+      wasZeroDone = HWTwasReady();
+
+      // Nie pozwalaj na autosterowanie przed pierwszym pewnym zerem
+      // ani po utracie danych HWT/TM171.
+      if (!HWTwasReady()) watchdogTimer = WATCHDOG_FORCE_VALUE;
     }
     else
     {
@@ -480,200 +486,8 @@ void autosteerLoop()
     // Ackerman fix
     if (steerAngleActual < 0) steerAngleActual = (steerAngleActual * steerSettings.AckermanFix);
 
+    // HWT101CT auto-zero jest realizowane w HWT101CT_WAS.ino
     // =================================================================
-    // AUTO-ZERO KEYA ENCODEUR - uniquement en mode IsDanfoss = 1
-    // =================================================================
-    if (steerConfig.IsDanfoss)
-    {
-    static const float AZ_NEAR_ZERO_DEG    = 2.0f;
-    static const float AZ_NEAR_ZERO_FACTOR = 0.3f;
-    {
-      static float    azLastYaw    = 0.0f;
-      static uint32_t azLastTime   = 0;
-      static int64_t  azAccum      = 0;
-      static uint32_t azCount      = 0;
-      static uint32_t dbgLastPrint = 0;
-      static uint32_t azCooldown   = 0;
-      static bool     azYawInit    = false;
-      static float    azLastGpsHdg = 0.0f;
-      static bool     azGpsInit    = false;
-
-      uint32_t nowMs = millis();
-
-      // Mode selon etat guidage
-      bool guidanceActive = (watchdogTimer < WATCHDOG_THRESHOLD);
-
-      // --- Yaw rate BNO08x [deg/s] ---
-      float yawRate = 0.0f;
-      if (!azYawInit) {
-        azLastYaw  = yaw;
-        azLastTime = nowMs;
-        azYawInit  = true;
-      } else {
-        float dt = (nowMs - azLastTime) / 1000.0f;
-        if (dt < 0.001f) dt = 0.001f;
-        float dYaw = yaw - azLastYaw;
-        if (dYaw >  180.0f) dYaw -= 360.0f;
-        if (dYaw < -180.0f) dYaw += 360.0f;
-        yawRate    = fabsf(dYaw) / dt;
-        azLastYaw  = yaw;
-        azLastTime = nowMs;
-      }
-
-      // --- Cap GPS filtre (emaGpsHdg depuis zHandlers, x10 deg -> deg) ---
-      float gpsHdgDeg  = emaGpsHdg / 10.0f;
-      float gpsHdgRate = 0.0f;
-      if (!azGpsInit) {
-        azLastGpsHdg = gpsHdgDeg;
-        azGpsInit    = true;
-      } else {
-        float dHdg = gpsHdgDeg - azLastGpsHdg;
-        if (dHdg >  180.0f) dHdg -= 360.0f;
-        if (dHdg < -180.0f) dHdg += 360.0f;
-        gpsHdgRate   = fabsf(dHdg);
-        azLastGpsHdg = gpsHdgDeg;
-      }
-
-      // --- Seuils adaptatifs selon proximite du zero (guidage ON uniquement) ---
-      float adaptFactor = 1.0f;
-      if (guidanceActive) {
-        float absAngle = fabsf(steerAngleActual);
-        if (absAngle < AZ_NEAR_ZERO_DEG) {
-          float ratio = absAngle / AZ_NEAR_ZERO_DEG;
-          adaptFactor = AZ_NEAR_ZERO_FACTOR + ratio * (1.0f - AZ_NEAR_ZERO_FACTOR);
-        }
-      }
-
-      float yawRateMax = azParams.yawRateMax * adaptFactor;
-      float gpsHdgMax  = azParams.gpsHdgMax  * adaptFactor;
-      bool  gpsOk      = (gpsHdgRate < gpsHdgMax);
-
-      // --- Temps de stabilite requis (identique dans les deux modes) ---
-      float azTimeMsF;
-      if      (gpsSpeed <= azParams.speedSlow) azTimeMsF = (float)azParams.timeSlowMs;
-      else if (gpsSpeed >= azParams.speedFast) azTimeMsF = (float)azParams.timeFastMs;
-      else {
-        float t = (gpsSpeed - azParams.speedSlow) / (azParams.speedFast - azParams.speedSlow);
-        azTimeMsF = (float)azParams.timeSlowMs + t * ((float)azParams.timeFastMs - (float)azParams.timeSlowMs);
-      }
-      azTimeMsF = constrain(azTimeMsF, 200.0f, 5000.0f);
-      uint32_t azTimeMs = (uint32_t)azTimeMsF;
-
-      // --- Conditions (strictement identiques dans les deux modes) ---
-      bool speedOk    = (gpsSpeed > azParams.speedMin);
-      bool straightOk = (!azParams.useBno) || (yawRate < yawRateMax);
-      bool gpsCapOk   = (!azParams.useGps) || gpsOk;
-      bool cooldownOk = (nowMs - azCooldown > 2000);
-
-      // --- DEBUG toutes les 5s si periode stable en cours ---
-      if (stableStart > 0 && (nowMs - dbgLastPrint > 5000)) {
-        dbgLastPrint = nowMs;
-        Serial.print(guidanceActive ? "[AZ-PRECIS] " : "[AZ-RAPIDE] ");
-        Serial.print("stable ");
-        Serial.print(nowMs - stableStart); Serial.print("/");
-        Serial.print(azTimeMs); Serial.print("ms");
-        Serial.print(" spd=");     Serial.print(gpsSpeed, 1);
-        Serial.print(" bno=");     Serial.print(straightOk ? "OK" : "NOK");
-        Serial.print(" yawR=");    Serial.print(yawRate, 2);
-        Serial.print("/");         Serial.print(yawRateMax, 2);
-        Serial.print(" gps=");     Serial.print(gpsCapOk ? "OK" : "NOK");
-        Serial.print(" gpsR=");    Serial.print(gpsHdgRate, 2);
-        Serial.print("/");         Serial.print(gpsHdgMax, 2);
-        Serial.print(" adapt=");   Serial.print(adaptFactor, 2);
-        Serial.print(" angle=");   Serial.print(steerAngleActual, 2);
-        Serial.print(" enc=");     Serial.println(keyaEncoderRaw);
-      }
-
-      if (speedOk && straightOk && gpsCapOk && cooldownOk)
-      {
-        if (stableStart == 0) {
-          stableStart = nowMs;
-          azAccum     = 0;
-          azCount     = 0;
-          Serial.print(guidanceActive ? "[AZ-PRECIS] " : "[AZ-RAPIDE] ");
-          Serial.print("Debut periode stable (adapt=");
-          Serial.print(adaptFactor, 2); Serial.println(")...");
-        }
-
-        azAccum += (int64_t)keyaEncoderRaw;
-        azCount++;
-
-        if ((nowMs - stableStart) > azTimeMs && azCount > 0)
-        {
-          int32_t meanTicks = (int32_t)(azAccum / (int64_t)azCount);
-
-          if (!wasZeroDone)
-          {
-            keyaZeroTicks = meanTicks;
-            wasZeroDone   = true;
-            azCorrAccum   = 0.0f;
-            Serial.print(guidanceActive ? "[AZ-PRECIS] " : "[AZ-RAPIDE] ");
-            Serial.print("*** PREMIER ZERO ETABLI *** (");
-            Serial.print(azCount); Serial.print(" ech) zeroTicks=");
-            Serial.println(keyaZeroTicks);
-          }
-          else if (!guidanceActive)
-          {
-            // MODE RAPIDE : saut direct a meanTicks
-            int32_t oldZero = keyaZeroTicks;
-            keyaZeroTicks   = meanTicks;
-            azCorrAccum     = 0.0f;
-            float deltaDeg  = (float)(keyaZeroTicks - oldZero) / keyaTicksPerDeg;
-            Serial.print("[AZ-RAPIDE] Saut direct: ");
-            Serial.print(deltaDeg, 2); Serial.print("deg");
-            Serial.print(" zero: "); Serial.print(oldZero);
-            Serial.print(" -> ");    Serial.println(keyaZeroTicks);
-          }
-          else
-          {
-            // MODE PRECIS : correction douce sub-tick
-            float corrSign = steerConfig.InvertWAS ? -1.0f : 1.0f;
-            azCorrAccum += corrSign * azParams.beta * steerAngleActual * keyaTicksPerDeg;
-            int32_t corrInt = (int32_t)azCorrAccum;
-            if (corrInt != 0) {
-              int32_t oldZero = keyaZeroTicks;
-              keyaZeroTicks  += corrInt;
-              azCorrAccum    -= (float)corrInt;
-              Serial.print("[AZ-PRECIS] Recalage: angle="); Serial.print(steerAngleActual, 2);
-              Serial.print(" adapt="); Serial.print(adaptFactor, 2);
-              Serial.print(" corr=");  Serial.print(corrInt);
-              Serial.print(" zero: "); Serial.print(oldZero);
-              Serial.print(" -> ");    Serial.println(keyaZeroTicks);
-            } else {
-              Serial.print("[AZ-PRECIS] Recalage accumule: "); Serial.print(azCorrAccum, 3);
-              Serial.println(" (attend 1 tick entier)");
-            }
-          }
-
-          Serial.print("[AZ] zeroTicks="); Serial.print(keyaZeroTicks);
-          Serial.print(" offsetDeg=");
-          Serial.println((float)keyaZeroTicks / keyaTicksPerDeg, 2);
-
-          azAccum     = 0;
-          azCount     = 0;
-          stableStart = 0;
-          azCooldown  = nowMs;
-        }
-      }
-      else
-      {
-        if (stableStart > 0) {
-          Serial.print(guidanceActive ? "[AZ-PRECIS] " : "[AZ-RAPIDE] ");
-          Serial.print("Conditions perdues apres ");
-          Serial.print(nowMs - stableStart);
-          Serial.print("ms spd="); Serial.print(speedOk    ? "OK" : "NOK");
-          Serial.print(" bno=");   Serial.print(straightOk ? "OK" : "NOK");
-          Serial.print(" gps=");   Serial.print(gpsCapOk   ? "OK" : "NOK");
-          Serial.print(" cool=");  Serial.println(cooldownOk ? "OK" : "NOK");
-        }
-        stableStart = 0;
-        azAccum     = 0;
-        azCount     = 0;
-      }
-    }
-    } // end if (steerConfig.IsDanfoss) auto-zero
-    // =================================================================
-
 
 		if (watchdogTimer < WATCHDOG_THRESHOLD)
   		{
@@ -854,15 +668,8 @@ void ReceiveUdp()
 
 				steerSettings.steerSensorCounts = autoSteerUdpData[9]; //sent as setting displayed in AOG
 
-        // En mode encodeur Keya : steerSensorCounts règle keyaTicksPerDeg
-        // Proportionnel pur centré sur 100 = KEYA_TICKS_PER_DEG_DEFAULT (24 ticks/deg)
-        // Exemples : 50 -> 12 ticks/deg, 100 -> 24 ticks/deg, 200 -> 48 ticks/deg
-        // Le zéro (offset) est géré séparément par keyaZeroTicks via l'auto-zero
-        if (steerConfig.IsDanfoss) {
-          keyaTicksPerDeg = KEYA_TICKS_PER_DEG_DEFAULT * ((float)steerSettings.steerSensorCounts / 100.0f);
-          if (keyaTicksPerDeg < 1.0f) keyaTicksPerDeg = 1.0f; // garde-fou division par zero
-          EEPROM.put(EEPROM_ADDR_KEYA_TICKS, keyaTicksPerDeg);
-        }
+        // W trybie HWT steerSensorCounts nie jest uzywany do pomiaru kata.
+
 
 				steerSettings.wasOffset = (autoSteerUdpData[10]);  //read was zero offset Lo
 
@@ -876,15 +683,8 @@ void ReceiveUdp()
 				//store in EEPROM
 				EEPROM.put(10, steerSettings);
 
-        // En mode Keya : si AOG envoie wasOffset = 0 -> reset zero encodeur
-        if (steerConfig.IsDanfoss && steerSettings.wasOffset == 0) {
-          keyaZeroTicks = keyaEncoderRaw;
-          wasZeroDone   = true;
-          stableStart   = 0;
-          azCorrAccum   = 0.0f;
-          Serial.print("[AZ] Zero force depuis AOG - zeroTicks=");
-          Serial.println(keyaZeroTicks);
-        }
+        // Zero HWT jest ustalane automatycznie po stabilnej jezdzie prosto.
+
 
 				// Re-Init steer settings
 				//steerSettingsInit();
