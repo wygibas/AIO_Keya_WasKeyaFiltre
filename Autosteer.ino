@@ -111,6 +111,8 @@ float sensorReading;
 float sensorSample;
 
 elapsedMillis gpsSpeedUpdateTimer = 0;
+bool wasAogSeen = false;
+bool wasAdcAvailable = false;
 
 //EEPROM
 int16_t EEread = 0;
@@ -220,21 +222,6 @@ void autosteerSetup()
 	Wire1.end();
 	Wire1.begin();
 
-	// Check ADC 
-	if (adc.testConnection())
-	{
-		Serial.println("ADC Connection OK");
-	}
-	else
-	{
-		Serial.println("ADC Connecton FAILED!");
-		if (!steerConfig.IsDanfoss) {
-			Autosteer_running = false;  // bloquant seulement en mode WAS physique
-		} else {
-			Serial.println("ADC non utilise en mode HWT101CT (IsDanfoss=1).");
-		}
-	}
-
 	//50Khz I2C
 	//TWBR = 144;   //Is this needed?
 
@@ -256,6 +243,8 @@ void autosteerSetup()
     EEPROM.get(70, aogConfig);
 	}
 
+  wasAdcAvailable = adc.testConnection();
+  Serial.println(wasAdcAvailable ? "ADC Connection OK" : "ADC absent: analog WAS locked");
 	steerSettingsInit();
   if (sectionout == 1)
       {
@@ -299,8 +288,10 @@ void autosteerSetup()
 		Serial.println("Autosteer disabled, GPS only mode");
 		return;
 	}
-	adc.setSampleRate(ADS1115_REG_CONFIG_DR_128SPS); //128 samples per second
+  if (wasAdcAvailable) {
+	adc.setSampleRate(ADS1115_REG_CONFIG_DR_128SPS);
 	adc.setGain(ADS1115_REG_CONFIG_PGA_6_144V);
+  }
 
   // Charger les parametres auto-zero depuis EEPROM
   azMenuSetup();
@@ -317,7 +308,8 @@ void autosteerLoop()
 #endif
 
   // Menu serie parametres auto-zero (touche 'm' dans le moniteur serie)
-  if (azMenuLoop()) return;
+  // Legacy blocking serial menu is not allowed during steering or virtual WAS.
+  if (!steerConfig.IsDanfoss && watchdogTimer >= WATCHDOG_THRESHOLD && azMenuLoop()) { pwmDrive = 0; motorDrive(); return; }
 
 	//Serial.println("AutoSteer loop");
 
@@ -437,7 +429,7 @@ void autosteerLoop()
       // --- MODE HWT101CT + TM171 VIRTUAL WAS ---
       // HWT jest na zwrotnicy. Odejmujemy yaw calego ciagnika z TM171.
       // emaGpsHdg jest zapisany jako deg x10.
-      HWTwasUpdate(TM171getYawDeg(), gpsSpeed, emaGpsHdg * 0.1f);
+      HWTwasUpdate(TM171getYawDeg(), gpsSpeed, wasAogSeen && gpsSpeedUpdateTimer < 500 && !(guidanceStatus & 1));
 
       float rawAngle = HWTwasGetAngle();
 
@@ -451,10 +443,14 @@ void autosteerLoop()
 
       // Nie pozwalaj na autosterowanie przed pierwszym pewnym zerem
       // ani po utracie danych HWT/TM171.
-      if (!HWTwasReady()) watchdogTimer = WATCHDOG_FORCE_VALUE;
+      if (!HWTwasCanSteer()) watchdogTimer = WATCHDOG_FORCE_VALUE;
     }
     else
     {
+      HWTinvalidate();
+      wasZeroDone = false;
+      if (!wasAdcAvailable) { watchdogTimer = WATCHDOG_FORCE_VALUE; steerAngleActual = 0; helloSteerPosition = 0; }
+      else {
       // --- MODE WAS PHYSIQUE ADS1115 ---
       if (steerConfig.SingleInputWAS)
       {
@@ -483,13 +479,14 @@ void autosteerLoop()
       }
     }
 
+    }
     // Ackerman fix
     if (steerAngleActual < 0) steerAngleActual = (steerAngleActual * steerSettings.AckermanFix);
 
     // HWT101CT auto-zero jest realizowane w HWT101CT_WAS.ino
     // =================================================================
 
-		if (watchdogTimer < WATCHDOG_THRESHOLD)
+		if (watchdogTimer < WATCHDOG_THRESHOLD && (steerConfig.IsDanfoss ? HWTwasCanSteer() : wasAdcAvailable))
   		{
   			steerAngleError = steerAngleActual - steerAngleSetPoint;   //calculate the steering error
   			//if (abs(steerAngleError)< steerSettings.lowPWM) steerAngleError = 0;
@@ -571,6 +568,7 @@ void ReceiveUdp()
 			{
 				gpsSpeed = ((float)(autoSteerUdpData[5] | autoSteerUdpData[6] << 8)) * 0.1;
 				gpsSpeedUpdateTimer = 0;
+        wasAogSeen = true;
 
 				prevGuidanceStatus = guidanceStatus;
 
@@ -585,7 +583,7 @@ void ReceiveUdp()
 
 				//Serial.println(gpsSpeed);
 
-				if ((bitRead(guidanceStatus, 0) == 0) || (gpsSpeed < 0.1) || (steerSwitch == 1))
+				if ((bitRead(guidanceStatus, 0) == 0) || (gpsSpeed < 0.1) || (steerSwitch == 1) || (steerConfig.IsDanfoss ? !HWTwasCanSteer() : !wasAdcAvailable))
 				{
 					watchdogTimer = WATCHDOG_FORCE_VALUE; //turn off steering motor
 				}
@@ -692,6 +690,7 @@ void ReceiveUdp()
 
 			else if (autoSteerUdpData[3] == 0xFB)  //251 FB - SteerConfig
 			{
+        uint8_t oldMode = steerConfig.IsDanfoss, oldInvert = steerConfig.InvertWAS;
 				uint8_t sett = autoSteerUdpData[5]; //setting0
 
 				if (bitRead(sett, 0)) steerConfig.InvertWAS = 1; else steerConfig.InvertWAS = 0;
@@ -718,6 +717,9 @@ void ReceiveUdp()
 				//crc
 				//autoSteerUdpData[13];
 
+        if (oldMode != steerConfig.IsDanfoss || oldInvert != steerConfig.InvertWAS) {
+          HWTinvalidate(); watchdogTimer = WATCHDOG_FORCE_VALUE; pwmDrive = 0; motorDrive();
+        }
 				EEPROM.put(40, steerConfig);
 
 

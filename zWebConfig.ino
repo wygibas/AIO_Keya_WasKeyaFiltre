@@ -259,55 +259,18 @@ static void sendPage(EthernetClient& c)
   c.print("&#127973; Angle WAS : <b>"); c.print(steerAngleActual, 2); c.print(" deg</b> &nbsp; ");
   c.print("&#128663; Vitesse : <b>"); c.print(gpsSpeed, 1); c.print(" km/h</b><br>");
   c.print("&#127748; Cap GPS filtre : <b>"); c.print(emaGpsHdg / 10.0f, 1); c.print(" deg</b> &nbsp; ");
-  c.print("Zero etabli : ");
-  if (wasZeroDone) c.print("<span class='ok'>&#10003; OUI</span>");
-  else             c.print("<span class='nok'>&#10007; NON</span>");
+  c.print("<br>WAS V3 : <b>"); c.print(HWTwasStatus()); c.print("</b><br>");
+  if (steerConfig.IsDanfoss) {
+    c.print("Zero: "); c.print(HWTwasReady()?"OK (estimation)":"NOT READY");
+    c.print(" | Straight: "); c.print(HWTzeroDistance(),1); c.print(" / 8 m");
+    c.print("<br><b>TEST MODE - KEYA LOCKED</b>");
+  }
   c.println("</div>");
 
-  // ---- BLOC SUIVI AUTO-ZERO ----
-  {
-    float zeroDeg = (keyaTicksPerDeg > 0.0f) ? ((float)keyaZeroTicks / keyaTicksPerDeg) : 0.0f;
-
-    c.print("<div class='azblock'>");
-    c.println("<div class='aztitle'>&#127919; Suivi Auto-Zero Keya</div>");
-    c.println("<div class='azgrid'>");
-
-    // Carte 1 : Angle WAS actuel (grande, verte)
-    c.print("<div class='azcard'>");
-    c.print("<span class='azlbl'>Angle WAS actuel</span>");
-    c.print("<span class='azval big'>"); c.print(steerAngleActual, 2); c.print(" deg</span>");
-    c.println("</div>");
-
-    // Carte 2 : Zero offset en degres
-    c.print("<div class='azcard'>");
-    c.print("<span class='azlbl'>WAS offset (zero)</span>");
-    c.print("<span class='azval'>"); c.print(zeroDeg, 2); c.print(" deg</span>");
-    c.println("</div>");
-
-    // Carte 3 : Zero ticks bruts
-    c.print("<div class='azcard'>");
-    c.print("<span class='azlbl'>Zero encodeur (ticks)</span>");
-    c.print("<span class='azval'>"); c.print(keyaZeroTicks); c.println("</span></div>");
-
-    // Carte 4 : Correction accumulee
-    c.print("<div class='azcard'>");
-    c.print("<span class='azlbl'>Correction accumulee</span>");
-    c.print("<span class='azval");
-    if (fabsf(azCorrAccum) > 0.3f) c.print(" azwarn");
-    c.print("'>"); c.print(azCorrAccum, 3); c.println(" tk</span></div>");
-
-    c.println("</div>"); // fin azgrid
-
-    // Barre de progression correction (plage -1 .. +1 tick)
-    {
-      float pct = constrain((azCorrAccum + 1.0f) / 2.0f, 0.0f, 1.0f) * 100.0f;
-      c.print("<div class='azbar'><div class='azfill' style='width:");
-      c.print(pct, 0); c.println("%'></div></div>");
-    }
-
-    c.println("</div>"); // fin azblock
+  if (steerConfig.IsDanfoss) {
+    c.println("<meta http-equiv='refresh' content='2'><p>HWT + TM171 diagnostic only. Legacy Keya zero settings are not used.</p></body></html>");
+    return;
   }
-
   c.println("<form method='POST' action='/save'>");
 
   // ================================================================

@@ -39,6 +39,19 @@ Onion YawV;
 Onion RollV;
 Onion PitchV;
 
+static bool tmYawSeen = false;
+static uint32_t tmYawMs = 0;
+
+bool TM171yawFresh()
+{
+    return useTM171 && tmYawSeen && (millis() - tmYawMs < 250);
+}
+
+uint32_t TM171yawAge()
+{
+    return tmYawSeen ? (uint32_t)(millis() - tmYawMs) : 99999UL;
+}
+
 float TM171getYawDeg()
 {
     return YawV.fValue;
@@ -171,11 +184,17 @@ void TM171process() {
         {
         case 35: // RPY Output du TM171
         {
+                  if (packetLength < 20) break;
                   float rawRoll, rawPitch, rawYaw;
                   memcpy(&rawRoll,  &ImuData[11], 4);
                   memcpy(&rawPitch, &ImuData[15], 4);
                   memcpy(&rawYaw,   &ImuData[19], 4);
         
+                  if (!isfinite(rawYaw) || !isfinite(rawRoll) || !isfinite(rawPitch) || fabsf(rawYaw) > 360.0f) {
+                      tmYawSeen = false; HWTinvalidate(); break;
+                  }
+                  if (tmYawSeen && millis() - tmYawMs >= 250) HWTinvalidate();
+                  tmYawMs = millis(); tmYawSeen = true;
                   // 1. Calcul du Gain de base via user1 (ex: réglé pour 5 km/h)
                   // On part du principe que user1 donne la réactivité voulue à basse vitesse.
                   //float baseGain = (float)aogConfig.user1 / 255.0f;
@@ -258,6 +277,7 @@ bool TM171detectOnPort(HardwareSerial* port, uint32_t detectionMs)
     TM171setup();
 
     TM171DataSeen = false;
+    tmYawSeen = false;
     TM171lastData = 0;
     parseState = WAIT_HEADER_1;
     packetLength = 0;

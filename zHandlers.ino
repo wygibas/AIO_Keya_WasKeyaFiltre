@@ -24,6 +24,16 @@ char speedKnots[10] = {};
 // Alpha fixe : 0.1 (lissage modere, ajustable ici si besoin)
 float emaGpsHdg = 0.0f;
 static bool emaGpsInit = false;
+static bool wasVtgValid = false;
+static uint32_t wasVtgMs = 0;
+static float wasVtgHdg = 0.0f, wasVtgSpeed = 0.0f;
+static uint32_t wasGgaMs = 0;
+static bool wasGgaFixed = false;
+
+bool HWTgpsFresh() { return wasVtgValid && wasGgaFixed && millis()-wasVtgMs < 750 && millis()-wasGgaMs < 750; }
+float HWTgpsHeading() { return wasVtgHdg; }
+float HWTgpsSpeed() { return wasVtgSpeed; }
+uint32_t HWTgpsStamp() { return wasVtgMs; }
 static const float EMA_GPS_ALPHA = 0.1f;
 
 // RMC (Recommended Minimum specific GNSS data) - AJOUTS FlorianT
@@ -78,7 +88,10 @@ void GGA_Handler() // Rec'd GGA
     parser.getArg(4, lonEW);
 
     // fix quality
+    fixQuality[0] = 0;
     parser.getArg(5, fixQuality);
+    wasGgaFixed = (fixQuality[0] == '4');
+    wasGgaMs = millis();
 
     // satellite #
     parser.getArg(6, numSats);
@@ -547,11 +560,14 @@ bool handleEmaSerialCommand(const String &cmd)
 
 void VTG_Handler()
 {
-    // vtg heading
-    parser.getArg(0, vtgHeading);
-
-    // vtg Speed knots
-    parser.getArg(4, speedKnots);
+    // Validate the actual VTG sample, not the previous filtered heading.
+    vtgHeading[0] = 0; speedKnots[0] = 0;
+    bool hdgOK = parser.getArg(0, vtgHeading);
+    bool speedOK = parser.getArg(4, speedKnots);
+    char *endH = nullptr, *endS = nullptr;
+    float h = strtof(vtgHeading, &endH), v = strtof(speedKnots, &endS);
+    wasVtgValid = hdgOK && speedOK && endH != vtgHeading && *endH == 0 && endS != speedKnots && *endS == 0 && isfinite(h) && isfinite(v) && h >= 0 && h <= 360 && v >= 0 && v < 50;
+    if (wasVtgValid) { wasVtgHdg = h; wasVtgSpeed = v * 1.852f; wasVtgMs = millis(); }
 
     // Mise a jour EMA cap GPS (x10 deg, meme echelle que yaw BNO)
     float rawHdg = atof(vtgHeading) * 10.0f;

@@ -1,285 +1,145 @@
-/*
-  HWT101CT_WAS.ino
-  Virtual WAS: HWT101CT na zwrotnicy + TM171 na ciagniku.
-
-  Danfoss OFF -> oryginalny ADS1115 WAS.
-  Danfoss ON  -> ten virtual WAS.
-
-  HWT101CT TTL:
-    TX HWT -> Teensy 4.1 RX5 pin 21
-    RX HWT -> Teensy 4.1 TX5 pin 20 (opcjonalnie)
-    GND wspolne
-
-  Serial5 jest wolny tylko gdy nmeaoutput == 0.
-
-  Fabryczny HWT101CT TTL:
-    9600 baud, 10 Hz.
-  Dlatego ta pierwsza wersja jest przygotowana pod ustawienia fabryczne.
-  Po testach przejdziemy na 100 Hz.
-*/
-
+// V3 experimental virtual WAS, diagnostic mode only. No KEYA actuation in virtual mode.
+// HWT TTL TX -> Teensy RX5 pin 21. GPS Serial2, TM171 Serial7.
 static HardwareSerial &HWT_SERIAL = Serial5;
+static const bool HWT_BENCH_LOCK = true;
+static const uint32_t HWT_BAUD = 9600, HWT_TIMEOUT_MS = 350;
+static const float HWT_SIGN = 1.0f, TM171_SIGN = 1.0f;
+static uint8_t hwtBuf[11], hwtIdx = 0;
+static bool hwtSeen = false, hwtZeroValid = false, hwtPairInit = false, hwtGpsInit = false;
+static uint32_t hwtMs = 0, hwtSeq = 0, hwtUsed = 0, pairMs = 0, gpsMs = 0, stableMs = 0;
+static float hwtYaw = 0, lastHwt = 0, lastTm = 0, hwtRelative = 0, hwtZero = 0, hwtWas = 0;
+static float hwtStraight = 0, gpsBase = 0, gpsRate = 999, tmRate = 999, relRate = 999;
+static const char *hwtState = "WAIT_HWT";
+static uint32_t jumpMs = 0;
+static bool jumpSeen = false;
 
-static const uint32_t HWT_BAUD = 9600;
-static const uint32_t HWT_TIMEOUT_MS = 500;
-
-static const float HWT_SIGN = +1.0f;
-static const float TM171_SIGN = +1.0f;
-
-static const float HWT_WAS_LIMIT_DEG = 55.0f;
-
-static const float HWT_ZERO_MIN_SPEED_KMH = 4.0f;
-static const float HWT_ZERO_DISTANCE_M = 8.0f;
-static const float HWT_ZERO_MAX_TM_RATE_DPS = 0.30f;
-static const float HWT_ZERO_MAX_GPS_RATE_DPS = 0.30f;
-static const float HWT_ZERO_MAX_REL_RATE_DPS = 0.40f;
-static const float HWT_ZERO_DRIFT_CORRECTION = 0.15f;
-
-static uint8_t hwtBuf[11];
-static uint8_t hwtIdx = 0;
-
-static float hwtAngleZDeg = 0.0f;
-static bool hwtSeen = false;
-static uint32_t hwtLastFrameMs = 0;
-static uint32_t hwtFrameCounter = 0;
-static uint32_t hwtFrameCounterUsed = 0;
-
-static bool hwtEstimatorInit = false;
-static float hwtLastAngleZDeg = 0.0f;
-static float hwtLastTmYawDeg = 0.0f;
-static uint32_t hwtLastEstimatorMs = 0;
-
-static float hwtWasDeg = 0.0f;
-static float hwtRelRateDps = 0.0f;
-static float hwtTmRateDps = 0.0f;
-static float hwtGpsRateDps = 999.0f;
-
-static bool hwtGpsInit = false;
-static float hwtLastGpsHeadingDeg = 0.0f;
-static uint32_t hwtLastGpsMs = 0;
-
-static bool hwtZeroValid = false;
-static float hwtStraightDistanceM = 0.0f;
-static uint32_t hwtStraightLastMs = 0;
-
-static uint32_t hwtLastDebugMs = 0;
-
-static float HWT_wrap180(float a)
-{
-  while (a > 180.0f) a -= 360.0f;
-  while (a < -180.0f) a += 360.0f;
+static float HWTwrap(float a) {
+  if (a > 180.0f) a -= 360.0f;
+  if (a < -180.0f) a += 360.0f;
   return a;
 }
-
-static bool HWT_checksumOK(const uint8_t *p)
-{
-  uint8_t sum = 0;
-  for (uint8_t i = 0; i < 10; i++) sum += p[i];
-  return sum == p[10];
+void HWTinvalidate() {
+  hwtZeroValid = false; hwtPairInit = false; hwtGpsInit = false;
+  hwtStraight = 0; stableMs = 0; hwtWas = 0; hwtRelative = 0;
+  gpsRate = 999; tmRate = 999; relRate = 999;
+  hwtUsed = hwtSeq; wasZeroDone = false;
 }
-
-static int16_t HWT_s16(uint8_t lo, uint8_t hi)
-{
-  return (int16_t)(((uint16_t)hi << 8) | lo);
+static bool HWTalive() { return !nmeaoutput && hwtSeen && millis()-hwtMs < HWT_TIMEOUT_MS; }
+void HWTsetup() {
+  if (!nmeaoutput) HWT_SERIAL.begin(HWT_BAUD);
+  Serial.println("[HWT V3] Serial5 9600; diagnostic motor lock");
 }
-
-void HWTsetup()
-{
-  if (nmeaoutput)
-  {
-    Serial.println("[HWT] BLAD: Serial5 zajety przez NMEA OUT");
-    return;
-  }
-
-  HWT_SERIAL.begin(HWT_BAUD);
-  delay(20);
-
-  Serial.print("[HWT] Serial5 start baud=");
-  Serial.println(HWT_BAUD);
-}
-
-void HWTprocess()
-{
+void HWTprocess() {
   if (nmeaoutput) return;
-  while (HWT_SERIAL.available())
-  {
+  while (HWT_SERIAL.available()) {
     uint8_t b = HWT_SERIAL.read();
-
-    if (hwtIdx == 0)
-    {
-      if (b == 0x55)
-      {
-        hwtBuf[0] = b;
-        hwtIdx = 1;
-      }
-      continue;
-    }
-
+    if (!hwtIdx && b != 0x55) continue;
     hwtBuf[hwtIdx++] = b;
-
-    if (hwtIdx >= 11)
-    {
-      hwtIdx = 0;
-
-      if (!HWT_checksumOK(hwtBuf)) continue;
-
-      // Standard WIT angle frame 0x53:
-      // Z/Yaw = bytes 6,7, scale raw/32768*180 deg.
-      if (hwtBuf[1] == 0x53)
-      {
-        int16_t rawZ = HWT_s16(hwtBuf[6], hwtBuf[7]);
-        hwtAngleZDeg = ((float)rawZ / 32768.0f) * 180.0f;
-        hwtLastFrameMs = millis();
-        hwtSeen = true;
-        hwtFrameCounter++;
+    if (hwtIdx == 11) {
+      uint8_t sum = 0; for (uint8_t i=0;i<10;i++) sum += hwtBuf[i];
+      if (sum == hwtBuf[10]) {
+        if (hwtBuf[1] == 0x53) {
+          uint32_t now = millis();
+          if (hwtSeen && now-hwtMs >= HWT_TIMEOUT_MS) HWTinvalidate();
+          int16_t raw = (int16_t)((uint16_t)hwtBuf[7]<<8 | hwtBuf[6]);
+          hwtYaw = raw * (180.0f/32768.0f);
+          hwtMs = now; hwtSeen = true; ++hwtSeq;
+        }
+        hwtIdx = 0;
+      } else {
+        // Resynchronise after a damaged frame.
+        uint8_t start = 1;
+        while (start < 11 && hwtBuf[start] != 0x55) ++start;
+        hwtIdx = 11-start;
+        memmove(hwtBuf,hwtBuf+start,hwtIdx);
       }
     }
   }
 }
-
-void HWTwasUpdate(float tmYawDeg, float speedKmh, float gpsHeadingDeg)
-{
+bool HWTwasReady() { return steerConfig.IsDanfoss && HWTalive() && TM171yawFresh() && hwtZeroValid; }
+bool HWTwasCanSteer() { return !HWT_BENCH_LOCK && HWTwasReady(); }
+float HWTwasGetAngle() { return hwtWas; }
+float HWTzeroDistance() { return hwtStraight; }
+const char* HWTwasStatus() {
+  if (!steerConfig.IsDanfoss) return "ANALOG";
+  if (nmeaoutput) return "PORT_CONFLICT";
+  if (!HWTalive()) return "NO_HWT";
+  if (!TM171yawFresh()) return "NO_TM171";
+  if (jumpSeen && millis()-jumpMs < 2000) return "ANGLE_FAULT";
+  if (HWTwasReady()) return "READY";
+  if (!HWTgpsFresh()) return "WAIT_GPS";
+  return hwtState;
+}
+void HWTwasUpdate(float tmYawDeg, float speedKmh, bool manual) {
   uint32_t now = millis();
-
-  if (!useTM171)
-  {
-    hwtZeroValid = false;
-    hwtStraightDistanceM = 0.0f;
-    return;
+  if (!HWTalive() || !TM171yawFresh() || !isfinite(tmYawDeg)) {
+    HWTinvalidate(); hwtState = "WAIT_SENSORS"; return;
   }
-
-  // Wolne, niezalezne potwierdzenie jazdy prosto z headingu GNSS.
-  if (!hwtGpsInit)
-  {
-    hwtLastGpsHeadingDeg = gpsHeadingDeg;
-    hwtLastGpsMs = now;
-    hwtGpsInit = true;
+  if (!HWTgpsFresh()) { hwtGpsInit=false; gpsRate=999; hwtStraight=0; stableMs=0; }
+  else if (!hwtGpsInit) {
+    gpsBase=HWTgpsHeading(); gpsMs=HWTgpsStamp(); hwtGpsInit=true; gpsRate=999;
+  } else if (HWTgpsStamp()-gpsMs >= 1000) {
+    uint32_t elapsed = HWTgpsStamp()-gpsMs;
+    gpsRate = fabsf(HWTwrap(HWTgpsHeading()-gpsBase))*1000.0f/elapsed;
+    gpsBase=HWTgpsHeading(); gpsMs=HWTgpsStamp();
   }
-  else if ((now - hwtLastGpsMs) >= 200)
-  {
-    float dtGps = (now - hwtLastGpsMs) * 0.001f;
-    float dGps = HWT_wrap180(gpsHeadingDeg - hwtLastGpsHeadingDeg);
-    hwtGpsRateDps = fabsf(dGps / dtGps);
-    hwtLastGpsHeadingDeg = gpsHeadingDeg;
-    hwtLastGpsMs = now;
+  if (hwtSeq == hwtUsed) return;
+  hwtUsed = hwtSeq;
+  // The received timestamps are approximate; require a recent matching body sample.
+  if (TM171yawAge() > 120) { HWTinvalidate(); hwtState="WAIT_SENSORS"; return; }
+  if (!hwtPairInit) {
+    lastHwt=hwtYaw; lastTm=tmYawDeg; pairMs=hwtMs; hwtPairInit=true; return;
   }
-
-  // Każda nowa ramka HWT aktualizuje wzgledny kat zwrotnicy.
-  if (hwtFrameCounter != hwtFrameCounterUsed)
-  {
-    hwtFrameCounterUsed = hwtFrameCounter;
-
-    if (!hwtEstimatorInit)
-    {
-      hwtLastAngleZDeg = hwtAngleZDeg;
-      hwtLastTmYawDeg = tmYawDeg;
-      hwtLastEstimatorMs = now;
-      hwtEstimatorInit = true;
-    }
-    else
-    {
-      float dt = (now - hwtLastEstimatorMs) * 0.001f;
-      if (dt < 0.001f) dt = 0.001f;
-      if (dt > 0.5f) dt = 0.5f;
-
-      float dHwt = HWT_wrap180(hwtAngleZDeg - hwtLastAngleZDeg) * HWT_SIGN;
-      float dTm = HWT_wrap180(tmYawDeg - hwtLastTmYawDeg) * TM171_SIGN;
-      float dRel = dHwt - dTm;
-
-      if (fabsf(dRel) < 15.0f)
-      {
-        hwtWasDeg += dRel;
-        hwtRelRateDps = dRel / dt;
+  uint32_t ms=hwtMs-pairMs;
+  if (!ms) return;
+  float dt=ms*0.001f;
+  float dh=HWTwrap(hwtYaw-lastHwt)*HWT_SIGN;
+  float dtm=HWTwrap(tmYawDeg-lastTm)*TM171_SIGN;
+  float dr=dh-dtm;
+  if (ms>=HWT_TIMEOUT_MS || fabsf(dh)>25 || fabsf(dtm)>25 || fabsf(dr)>15) {
+    HWTinvalidate(); jumpSeen=true; jumpMs=now; hwtState="ANGLE_FAULT"; return;
+  }
+  lastHwt=hwtYaw; lastTm=tmYawDeg; pairMs=hwtMs;
+  hwtRelative=HWTwrap(hwtRelative+dr);
+  tmRate=tmRate==999?dtm/dt:0.8f*tmRate+0.2f*dtm/dt;
+  relRate=relRate==999?dr/dt:0.8f*relRate+0.2f*dr/dt;
+  if (hwtZeroValid) {
+    hwtWas=HWTwrap(hwtRelative-hwtZero);
+    if (fabsf(hwtWas)>55) { HWTinvalidate(); jumpSeen=true; jumpMs=now; return; }
+  }
+  bool straight=manual && HWTgpsFresh() && speedKmh>=4 && HWTgpsSpeed()>=4 &&
+    fabsf(speedKmh-HWTgpsSpeed())<=2 && gpsRate<=0.7f && fabsf(tmRate)<=0.3f &&
+    fabsf(relRate)<=0.4f && fabsf(dtm)<=0.5f && fabsf(dr)<=0.5f;
+  if (!straight) {
+    hwtStraight=0; stableMs=0;
+    hwtState=manual?"WAIT_STRAIGHT":"TURN_AOG_OFF";
+  } else {
+    if (!stableMs) stableMs=now;
+    hwtStraight += HWTgpsSpeed()/3.6f*dt;
+    hwtState="ZEROING";
+    if (hwtStraight>=8 && now-stableMs>=3000) {
+      if (!hwtZeroValid) {
+        hwtZero=hwtRelative; hwtWas=0; hwtZeroValid=true;
+        Serial.println("[HWT V3] ZERO OK (estimated from straight travel)");
       }
-
-      hwtTmRateDps = dTm / dt;
-
-      hwtLastAngleZDeg = hwtAngleZDeg;
-      hwtLastTmYawDeg = tmYawDeg;
-      hwtLastEstimatorMs = now;
-
-      hwtWasDeg = constrain(hwtWasDeg, -HWT_WAS_LIMIT_DEG, HWT_WAS_LIMIT_DEG);
+      // No moving zero / drift correction in this diagnostic release.
+      hwtStraight=8;
     }
-  }
-
-  bool alive = hwtSeen && ((now - hwtLastFrameMs) < HWT_TIMEOUT_MS);
-
-  if (!alive)
-  {
-    hwtStraightDistanceM = 0.0f;
-    hwtStraightLastMs = now;
-    return;
-  }
-
-  if (hwtStraightLastMs == 0) hwtStraightLastMs = now;
-
-  float dtStraight = (now - hwtStraightLastMs) * 0.001f;
-  hwtStraightLastMs = now;
-  if (dtStraight > 0.2f) dtStraight = 0.2f;
-
-  bool straight =
-      speedKmh >= HWT_ZERO_MIN_SPEED_KMH &&
-      fabsf(hwtTmRateDps) <= HWT_ZERO_MAX_TM_RATE_DPS &&
-      hwtGpsRateDps <= HWT_ZERO_MAX_GPS_RATE_DPS &&
-      fabsf(hwtRelRateDps) <= HWT_ZERO_MAX_REL_RATE_DPS;
-
-  if (straight)
-  {
-    hwtStraightDistanceM += (speedKmh / 3.6f) * dtStraight;
-
-    if (hwtStraightDistanceM >= HWT_ZERO_DISTANCE_M)
-    {
-      if (!hwtZeroValid)
-      {
-        hwtWasDeg = 0.0f;
-        hwtZeroValid = true;
-        Serial.println("[HWT-WAS] ZERO OK po jezdzie prosto");
-      }
-      else
-      {
-        hwtWasDeg *= (1.0f - HWT_ZERO_DRIFT_CORRECTION);
-      }
-
-      hwtStraightDistanceM = 0.0f;
-    }
-  }
-  else
-  {
-    hwtStraightDistanceM = 0.0f;
-  }
-
-  if ((now - hwtLastDebugMs) >= 2000)
-  {
-    hwtLastDebugMs = now;
-    Serial.print("[HWT-WAS] HWT=");
-    Serial.print(hwtAngleZDeg, 2);
-    Serial.print(" TM=");
-    Serial.print(tmYawDeg, 2);
-    Serial.print(" tmRate=");
-    Serial.print(hwtTmRateDps, 2);
-    Serial.print(" gpsRate=");
-    Serial.print(hwtGpsRateDps, 2);
-    Serial.print(" relRate=");
-    Serial.print(hwtRelRateDps, 2);
-    Serial.print(" WAS=");
-    Serial.print(hwtWasDeg, 2);
-    Serial.print(" zero=");
-    Serial.print(hwtZeroValid ? "OK" : "WAIT");
-    Serial.print(" straight=");
-    Serial.print(hwtStraightDistanceM, 1);
-    Serial.println("m");
   }
 }
-
-bool HWTwasReady()
-{
-  return useTM171 &&
-         hwtZeroValid &&
-         hwtSeen &&
-         ((millis() - hwtLastFrameMs) < HWT_TIMEOUT_MS);
-}
-
-float HWTwasGetAngle()
-{
-  return hwtWasDeg;
+void HWTsendStatus() {
+  static uint32_t last=0;
+  if (!Ethernet_running || millis()-last<250) return;
+  last=millis();
+  char msg[180];
+  const char *state=HWTwasStatus();
+  int n=snprintf(msg,sizeof(msg),"WAS3|%s|%.2f|%.1f|%lu|%lu|%s",state,
+    (double)steerAngleActual,(double)hwtStraight,
+    (unsigned long)(hwtSeen?millis()-hwtMs:99999UL),(unsigned long)TM171yawAge(),
+    steerConfig.IsDanfoss?"BENCH":"ANALOG");
+  if(n>0 && n<(int)sizeof(msg)) {
+    Eth_udpPAOGI.beginPacket(Eth_ipDestination,17999);
+    Eth_udpPAOGI.write((const uint8_t*)msg,n);
+    Eth_udpPAOGI.endPacket();
+  }
 }

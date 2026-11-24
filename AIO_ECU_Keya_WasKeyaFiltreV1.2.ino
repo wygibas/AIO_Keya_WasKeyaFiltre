@@ -1,6 +1,6 @@
 #define AOG_SKETCH_KEYA //FlorianT section control
 
-#define VERSION 1.03
+#define VERSION 1.04
 //  0 = Claas (1E/30 Navagation Controller, 13/19 Steering Controller) - See Claas Notes on Service Tool Page
 //  1 = Valtra, Massey Fergerson (Standard Danfoss ISO 1C/28 Navagation Controller, 13/19 Steering Controller)
 //  2 = CaseIH, New Holland (AA/170 Navagation Controller, 08/08 Steering Controller)
@@ -314,10 +314,11 @@ void setup()
 void loop()
 {
     KeyaBus_Receive();
-    webConfigLoop();
+    // Do not allow the blocking configuration server to delay active steering.
+    if (watchdogTimer >= WATCHDOG_THRESHOLD || steerConfig.IsDanfoss) webConfigLoop();
 
     // Read incoming nmea from GPS modif FlorianT
-    if (SerialGPS->available())
+    while (SerialGPS->available())
     {
         parser << SerialGPS->read(); 
     }
@@ -345,6 +346,7 @@ void loop()
     
     if (Autosteer_running) autosteerLoop();
     else ReceiveUdp();
+    HWTsendStatus();
 
 
 

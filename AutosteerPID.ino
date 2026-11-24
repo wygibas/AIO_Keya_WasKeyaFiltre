@@ -31,6 +31,8 @@ void calcSteeringPID(void)
 
 void motorDrive(void)
 {
+  // Final output interlock: the V3 virtual mode is diagnostics-only.
+  if (steerConfig.IsDanfoss && !HWTwasCanSteer()) pwmDrive = 0;
 	// Steering Motor
   if (pwmDrive == 0) {
     // send disable
