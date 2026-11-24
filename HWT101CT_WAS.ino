@@ -14,15 +14,15 @@ static uint32_t jumpMs = 0;
 static bool jumpSeen = false;
 
 static float HWTwrap(float a) {
-  if (a > 180.0f) a -= 360.0f;
-  if (a < -180.0f) a += 360.0f;
+  while (a > 180.0f) a -= 360.0f;
+  while (a < -180.0f) a += 360.0f;
   return a;
 }
 void HWTinvalidate() {
   hwtZeroValid = false; hwtPairInit = false; hwtGpsInit = false;
   hwtStraight = 0; stableMs = 0; hwtWas = 0; hwtRelative = 0;
   gpsRate = 999; tmRate = 999; relRate = 999;
-  hwtUsed = hwtSeq; wasZeroDone = false;
+  hwtUsed = hwtSeq; wasZeroDone = false; hwtState = "WAIT_STRAIGHT";
 }
 static bool HWTalive() { return !nmeaoutput && hwtSeen && millis()-hwtMs < HWT_TIMEOUT_MS; }
 void HWTsetup() {
@@ -61,7 +61,7 @@ bool HWTwasCanSteer() { return !HWT_BENCH_LOCK && HWTwasReady(); }
 float HWTwasGetAngle() { return hwtWas; }
 float HWTzeroDistance() { return hwtStraight; }
 const char* HWTwasStatus() {
-  if (!steerConfig.IsDanfoss) return "ANALOG";
+  if (!steerConfig.IsDanfoss) return wasAdcAvailable ? "ANALOG" : "NO_ADC";
   if (nmeaoutput) return "PORT_CONFLICT";
   if (!HWTalive()) return "NO_HWT";
   if (!TM171yawFresh()) return "NO_TM171";

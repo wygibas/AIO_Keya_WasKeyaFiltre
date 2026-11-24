@@ -301,6 +301,10 @@ void autosteerSetup()
 
 float azCorrAccum = 0.0f; // accumulation sub-tick pour recalage progressif
 
+bool HWTwebAllowed() {
+  return watchdogTimer >= WATCHDOG_THRESHOLD || steerConfig.IsDanfoss;
+}
+
 void autosteerLoop()
 {
 #ifdef ARDUINO_TEENSY41

@@ -315,7 +315,7 @@ void loop()
 {
     KeyaBus_Receive();
     // Do not allow the blocking configuration server to delay active steering.
-    if (watchdogTimer >= WATCHDOG_THRESHOLD || steerConfig.IsDanfoss) webConfigLoop();
+    if (HWTwebAllowed()) webConfigLoop();
 
     // Read incoming nmea from GPS modif FlorianT
     while (SerialGPS->available())
