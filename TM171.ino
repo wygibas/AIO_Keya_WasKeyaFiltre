@@ -1,7 +1,7 @@
 //Based on the work of Paulius a.k.a. babtai RTK!
 
 
-extern HardwareSerial* SerialImu; // &Serial5 for RVC port
+extern HardwareSerial* SerialImu; // &Serial2 for RVC port
 
 //constexpr int serial_buffer_size = 512;
 uint8_t SerialImurxbuffer[serial_buffer_size];    //Extra serial tx buffer
