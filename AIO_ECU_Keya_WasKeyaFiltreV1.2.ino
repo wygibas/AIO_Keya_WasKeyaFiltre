@@ -1,6 +1,6 @@
 #define AOG_SKETCH_KEYA //FlorianT section control
 
-#define VERSION 1.02
+#define VERSION 1.03
 //  0 = Claas (1E/30 Navagation Controller, 13/19 Steering Controller) - See Claas Notes on Service Tool Page
 //  1 = Valtra, Massey Fergerson (Standard Danfoss ISO 1C/28 Navagation Controller, 13/19 Steering Controller)
 //  2 = CaseIH, New Holland (AA/170 Navagation Controller, 08/08 Steering Controller)
@@ -53,7 +53,7 @@ struct Setup {
 	uint8_t PressureSensor = 0;
 	uint8_t CurrentSensor = 0;
 	uint8_t PulseCountMax = 5;
-	uint8_t IsDanfoss = 0;            // 0 = WAS physique ADS1115 | 1 = Encodeur Keya + auto-zero
+	uint8_t IsDanfoss = 0;            // 0 = WAS physique ADS1115 | 1 = HWT101CT + TM171 virtual WAS
 	uint8_t IsUseY_Axis = 0;
 
 }; Setup steerConfig;
@@ -62,8 +62,8 @@ struct Setup {
 
 // -----------------------------------------------------------------------
 // MODE IsDanfoss :
-//   IsDanfoss = 0 -> WAS physique via ADS1115 (code original), pas d'auto-zero
-//   IsDanfoss = 1 -> WAS via encodeur Keya + auto-zero automatique (code modifie)
+//   IsDanfoss = 0 -> WAS physique via ADS1115 (code original)
+//   IsDanfoss = 1 -> HWT101CT sur zwrotnicy + TM171 jako virtual WAS
 // La variable steerConfig.IsDanfoss est lue depuis AgOpenGPS (PGN 251 bit0 byte8)
 // -----------------------------------------------------------------------
 
@@ -293,6 +293,9 @@ void setup()
   Serial.print("useTM171 = ");
   Serial.println(useTM171);
 
+  Serial.println("\r\nStarting HWT101CT virtual WAS...");
+  HWTsetup();
+
   Serial.println("Right... time for some CANBUS! And, we're dedicated to Keya here");
   CAN_Setup();
   if (nmeaoutput == 1)
@@ -302,7 +305,7 @@ void setup()
 
   // Affichage du mode actif au demarrage
   if (steerConfig.IsDanfoss == 1) {
-    Serial.println("[MODE] IsDanfoss=1 -> WAS via encodeur Keya + auto-zero actif");
+    Serial.println("[MODE] IsDanfoss=1 -> HWT101CT + TM171 virtual WAS");
   } else {
     Serial.println("[MODE] IsDanfoss=0 -> WAS physique ADS1115, pas d'auto-zero");
   }
@@ -335,6 +338,7 @@ void loop()
     }
 
     TM171process();
+    HWTprocess();
     if (useTM171 && imuTimer > 40 && imuTrigger)
     {
         imuTrigger = false;
