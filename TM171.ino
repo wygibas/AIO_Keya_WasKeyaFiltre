@@ -39,6 +39,11 @@ Onion YawV;
 Onion RollV;
 Onion PitchV;
 
+float TM171getYawDeg()
+{
+    return YawV.fValue;
+}
+
 Onion TemperatureV;
 uint8_t qos;
 
