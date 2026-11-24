@@ -211,8 +211,6 @@ void setup()
   Serial.println("Start setup");
 
   SerialGPS->begin(baudGPS);
-  SerialGPS->addMemoryForRead(GPSrxbuffer, serial_buffer_size);
-  SerialGPS->addMemoryForWrite(GPStxbuffer, serial_buffer_size);
 
   delay(10);  
   Serial.println("SerialAOG, SerialRTK, SerialGPS initialized");
