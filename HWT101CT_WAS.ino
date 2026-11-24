@@ -6,11 +6,11 @@
   Danfoss ON  -> ten virtual WAS.
 
   HWT101CT TTL:
-    TX HWT -> Teensy 4.1 RX2 pin 7
-    RX HWT -> Teensy 4.1 TX2 pin 8 (opcjonalnie)
+    TX HWT -> Teensy 4.1 RX5 pin 21
+    RX HWT -> Teensy 4.1 TX5 pin 20 (opcjonalnie)
     GND wspolne
 
-  Serial2 jest wolny tylko gdy nmeaoutput == 0.
+  Serial5 jest wolny tylko gdy nmeaoutput == 0.
 
   Fabryczny HWT101CT TTL:
     9600 baud, 10 Hz.
@@ -18,7 +18,7 @@
   Po testach przejdziemy na 100 Hz.
 */
 
-static HardwareSerial &HWT_SERIAL = Serial2;
+static HardwareSerial &HWT_SERIAL = Serial5;
 
 static const uint32_t HWT_BAUD = 9600;
 static const uint32_t HWT_TIMEOUT_MS = 500;
@@ -87,19 +87,20 @@ void HWTsetup()
 {
   if (nmeaoutput)
   {
-    Serial.println("[HWT] BLAD: Serial2 zajety przez NMEA OUT");
+    Serial.println("[HWT] BLAD: Serial5 zajety przez NMEA OUT");
     return;
   }
 
   HWT_SERIAL.begin(HWT_BAUD);
   delay(20);
 
-  Serial.print("[HWT] Serial2 start baud=");
+  Serial.print("[HWT] Serial5 start baud=");
   Serial.println(HWT_BAUD);
 }
 
 void HWTprocess()
 {
+  if (nmeaoutput) return;
   while (HWT_SERIAL.available())
   {
     uint8_t b = HWT_SERIAL.read();
