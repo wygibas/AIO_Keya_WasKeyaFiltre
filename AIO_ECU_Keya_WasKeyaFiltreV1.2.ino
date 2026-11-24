@@ -16,8 +16,8 @@ bool sectionout = 0;
 /************************* User Settings *************************/
 // Serial Ports
 #define SerialAOG Serial                //AgIO USB conection
-HardwareSerial* SerialGPS = &Serial7;   //Main postion receiver (GGA)
-HardwareSerial* SerialImu = &Serial2;   //TM171
+HardwareSerial* SerialGPS = &Serial2;   //Main postion receiver (GGA)
+HardwareSerial* SerialImu = &Serial7;   //TM171
 Stream* NmeaOutputSerial = &Serial5;   //NMEA out
 
 const int32_t baudAOG = 115200; 
@@ -273,7 +273,7 @@ void setup()
 
             if (TM171detectOnPort(SerialImu, 1500))
             {
-                Serial.println("Received data from TM171 on Serial2");
+                Serial.println("Received data from TM171 on Serial7");
                 foundTM171 = true;
             }
         
