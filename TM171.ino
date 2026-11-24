@@ -86,8 +86,6 @@ static void logOversizeTM171Packet()
 
 void TM171setup() {
   SerialImu->begin(115200); 
-  SerialImu->addMemoryForWrite(SerialImutxbuffer, serial_buffer_size);
-  SerialImu->addMemoryForRead(SerialImurxbuffer, serial_buffer_size);
 }
 
 void TM171process() {
