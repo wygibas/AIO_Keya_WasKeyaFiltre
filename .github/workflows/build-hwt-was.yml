@@ -1,0 +1,51 @@
+name: Build Teensy 4.1 HWT WAS
+
+on:
+  push:
+    branches:
+      - chatgpt/hwt101ct-was-v1
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Install Teensy core
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls https://www.pjrc.com/teensy/package_teensy_index.json
+          arduino-cli core update-index
+          arduino-cli core install teensy:avr
+
+      - name: Prepare sketch folder
+        run: |
+          SKETCH=/tmp/AIO_ECU_Keya_WasKeyaFiltreV1.2
+          mkdir -p "$SKETCH"
+          cp *.ino *.cpp *.h "$SKETCH"/
+
+      - name: Compile for Teensy 4.1
+        run: |
+          mkdir -p build
+          arduino-cli compile \
+            --fqbn teensy:avr:teensy41 \
+            --output-dir "$GITHUB_WORKSPACE/build" \
+            /tmp/AIO_ECU_Keya_WasKeyaFiltreV1.2
+
+      - name: Rename HEX
+        run: |
+          HEX=$(find build -maxdepth 1 -type f -name '*.hex' | head -n 1)
+          test -n "$HEX"
+          cp "$HEX" build/AIO_v45_HWT101CT_TM171_WAS_v1.hex
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIO_v45_HWT101CT_TM171_WAS_v1
+          path: build/AIO_v45_HWT101CT_TM171_WAS_v1.hex
+          if-no-files-found: error
