@@ -437,7 +437,7 @@ void autosteerLoop()
       // --- MODE HWT101CT + TM171 VIRTUAL WAS ---
       // HWT jest na zwrotnicy. Odejmujemy yaw calego ciagnika z TM171.
       // emaGpsHdg jest zapisany jako deg x10.
-      HWTwasUpdate(YawV.fValue, gpsSpeed, emaGpsHdg * 0.1f);
+      HWTwasUpdate(TM171getYawDeg(), gpsSpeed, emaGpsHdg * 0.1f);
 
       float rawAngle = HWTwasGetAngle();
 
